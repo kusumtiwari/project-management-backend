@@ -36,7 +36,10 @@ router.post("/login", async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Login successful",
-      token: token,
+      profile: {
+        username: user.username,
+        email: user.email,
+      },
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -46,30 +49,25 @@ router.post("/login", async (req, res) => {
 
 // Registration Route
 router.post("/register", async (req, res) => {
-  const { username, email, password, confirmPassword } = req.body; // Added username and confirmPassword
+  const { username, email, password, confirmPassword } = req.body;
 
   try {
-    // Basic validation for fields
     if (!username || !email || !password || !confirmPassword) {
       return res.status(400).json({ message: "Please enter all fields" });
     }
 
-    // Check if passwords match
     if (password !== confirmPassword) {
       return res.status(400).json({ message: "Passwords do not match" });
     }
 
-    // Check if user already exists with the given email
-    const existingUser = await User.findOne({ email }); // Changed from username to email
+    const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res
         .status(400)
         .json({ message: "User with this email already exists" });
     }
 
-    // Create new user (password will be automatically hashed by pre-save middleware)
-    // Note: The schema only stores email and password. If you want to store username, add it to the User schema.
-    const user = new User({ email, password });
+    const user = new User({ username, email, password }); // ✅ Include username
     await user.save();
 
     res.status(201).json({
@@ -81,5 +79,6 @@ router.post("/register", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 module.exports = router;
