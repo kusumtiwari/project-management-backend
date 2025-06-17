@@ -1,13 +1,13 @@
-const express = require('express');
+// src/app.js
+const express = require("express");
 const app = express();
-const cors = require('cors');
+const cors = require("cors");
 
 app.use(cors());
 app.use(express.json());
 
-const indexRoutes = require('./routes/index');
-const authRoutes = require('./routes/auth')
+// Centralized routes
+const indexRoutes = require("./routes/index");
 app.use("/api", indexRoutes);
-app.use("/api/auth", authRoutes); 
 
 module.exports = app;

@@ -39,6 +39,7 @@ router.post("/login", async (req, res) => {
       profile: {
         username: user.username,
         email: user.email,
+        token: token
       },
     });
   } catch (error) {
