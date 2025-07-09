@@ -1,9 +1,9 @@
 const TeamSetup = require("../models/TeamSetup");
-const User = require("../models/User")
+const User = require("../models/User");
+
 exports.createTeamSetup = async (req, res) => {
   try {
     const { name } = req.body;
-
     const existingTeam = await TeamSetup.findOne({
       name
     })
