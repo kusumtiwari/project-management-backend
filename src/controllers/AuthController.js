@@ -1,13 +1,11 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const { sendVerificationEmail } = require("../utils/emailUtils");
-
-
+const Invitation = require('../models/Invitation')
+const bcrypt = require('bcryptjs')
+// for user signup 
 exports.register = async (req, res) => {
   const { username, email, password, confirmPassword } = req.body;
-  console.log("Email user:", process.env.EMAIL_USER);
-  console.log("Email pass set?", !!process.env.EMAIL_PASS);
-
   try {
     // Validation checks
     if (!username || !email || !password || !confirmPassword) {
@@ -22,6 +20,7 @@ exports.register = async (req, res) => {
         .json({ success: false, message: "Passwords do not match" });
     }
 
+    console.log(req.body,'here')
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       if (!existingUser.isVerified) {
@@ -74,6 +73,7 @@ exports.register = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+// for user login 
 exports.login = async (req, res) => {
   const { email, password } = req.body;
 
@@ -124,31 +124,164 @@ exports.login = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
-
-// controllers/authController.js
+// to verify the registered user 
 exports.verifyEmail = async (req, res) => {
   const { token } = req.query;
-  console.log(token,'token')
-
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id);
 
     if (!user) {
-      return res.status(400).json({ success: false, message: 'Invalid token' });
+      return res.status(400).json({ success: false, message: "Invalid token" });
     }
 
     if (user.isVerified) {
-      return res.status(400).json({ success: false, message: 'Email already verified' });
+      // Issue new access token
+      const accessToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+        expiresIn: "1h",
+      });
+      return res.status(200).json({
+        success: true,
+        message: "Email already verified",
+        token: accessToken,
+      });
     }
 
     user.isVerified = true;
     await user.save();
 
-    res.status(200).json({ success: true, message: 'Email verified successfully' });
+    // Issue token after verification
+    const accessToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+      expiresIn: "1h",
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Email verified successfully",
+      token: accessToken,
+    });
   } catch (err) {
     console.error(err);
-    res.status(400).json({ success: false, message: 'Invalid or expired token' });
+    res
+      .status(400)
+      .json({ success: false, message: "Invalid or expired token" });
+  }
+};
+// to verify the invited team member
+exports.verifyTeamMember = async (req, res) => {
+  try{
+      const token = req.query.token;
+
+    if (!token) {
+      return res.status(400).json({ message: "Token is required in query." });
+    }
+    const payload = jwt.verify(token, process.env.INVITE_SECRET);
+    const invitation = await Invitation.findOne({ token });
+
+    if (!invitation) {
+      return res.status(404).json({ message: "Invitation not found." });
+    }
+
+    if (invitation.expiresAt < Date.now()) {
+      return res.status(400).json({ message: "Invitation has expired." });
+    }
+
+    if (invitation.used) {
+      return res.status(400).json({ message: "Invitation already used." });
+    }
+    return res.status(200).json({
+      success: true,
+      email: payload.email,
+      message: "Valid invitation.",
+    });
+  } catch (err) {
+    console.error("Invitation verification error:", err);
+    return res.status(400).json({ message: "Invalid or expired token." });
+  }
+  }
+
+exports.registerInvitedTeamMember = async (req, res) => {
+  try {
+    const { token, name, password } = req.body;
+
+    if (!token || !name || !password) {
+      return res.status(400).json({ message: "All fields are required." });
+    }
+
+    const payload = jwt.verify(token, process.env.INVITE_SECRET);
+    const invitation = await Invitation.findOne({ token });
+
+    if (!invitation) {
+      return res.status(404).json({ message: "Invitation not found." });
+    }
+
+    if (invitation.used) {
+      return res.status(400).json({ message: "Invitation already used." });
+    }
+
+    if (invitation.expiresAt < Date.now()) {
+      return res.status(400).json({ message: "Invitation expired." });
+    }
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ email: payload.email });
+    if (existingUser) {
+      return res.status(400).json({ message: "User already registered." });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = new User({
+      name,
+      email: payload.email,
+      password: hashedPassword,
+      teams: [
+        {
+          teamId: invitation.teamId,
+          role: invitation.role || "member", // default to 'member' if not set
+          joinedAt: new Date(),
+        },
+      ],
+    });
+
+    await newUser.save();
+
+    // Mark invitation as used
+    invitation.used = true;
+    await invitation.save();
+
+    // Generate login token
+    const loginToken = jwt.sign(
+      {
+        id: newUser._id,
+        email: newUser.email,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    const team = await Team.findById(invitation.teamId);
+
+    return res.status(201).json({
+      success: true,
+      message: "Registration successful.",
+      token: loginToken,
+      profile: {
+        username: newUser.name,
+        email: newUser.email,
+        teams: [
+          {
+            teamId: team._id,
+            teamName: team.name,
+            role: invitation.role,
+            joinedAt: newUser.teams[0].joinedAt,
+          },
+        ],
+      },
+    });
+  } catch (err) {
+    console.error("Register invited member error:", err);
+    return res.status(500).json({ message: "Something went wrong." });
   }
 };
 

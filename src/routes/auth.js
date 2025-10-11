@@ -4,9 +4,9 @@ const AuthController = require("../controllers/AuthController");
 
 // Register (with team creation)
 router.post("/register", AuthController.register);
-
-// Login
 router.post("/login", AuthController.login);
-router.get("/verify-email", AuthController.verifyEmail); 
+router.get("/verify-email", AuthController.verifyEmail);
+router.get("/verify-team-member", AuthController.verifyTeamMember);
+router.post("/register-invited-member", AuthController.registerInvitedTeamMember);
 
 module.exports = router;

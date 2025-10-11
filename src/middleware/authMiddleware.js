@@ -17,7 +17,7 @@ exports.protect = async(req,res,next) => {
       console.log("Decoded Token:", decoded); 
       const user = await User.findById(decoded.id).select("-password");
 
-      console.log(user,'user here')
+      console.log(user,'user from middleware')
       if (!user) {
         return res
           .status(401)
