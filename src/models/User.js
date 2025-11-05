@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true },
     username: { type: String, required: true },
     isVerified: { type: Boolean, default: false },
+    isAdmin: { type: Boolean, default: false },
     teams: [
       {
         teamId: {
@@ -16,6 +17,8 @@ const userSchema = new mongoose.Schema(
         },
         teamName: { type: String, required: true },
         role: { type: String, enum: ["admin", "member"], default: "member" },
+        roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role" },
+        permissions: [{ type: String }],
         joinedAt: { type: Date, default: Date.now },
       },
     ],

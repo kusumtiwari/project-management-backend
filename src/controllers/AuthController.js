@@ -1,8 +1,8 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const { sendVerificationEmail } = require("../utils/emailUtils");
-const Invitation = require('../models/Invitation')
-const bcrypt = require('bcryptjs')
+const TeamSetup = require('../models/TeamSetup')
+const Role = require('../models/Role')
 // for user signup 
 exports.register = async (req, res) => {
   const { username, email, password, confirmPassword } = req.body;
@@ -48,7 +48,8 @@ exports.register = async (req, res) => {
       username,
       email,
       password,
-      isVerified: false, // <-- IMPORTANT
+      isVerified: false, // email verification still required for self-signup
+      isAdmin: true,
     });
     await user.save();
 
@@ -117,6 +118,7 @@ exports.login = async (req, res) => {
         username: user.username,
         email: user.email,
         teams: user.teams,
+        isAdmin: user.isAdmin,
       },
     });
   } catch (error) {
@@ -167,121 +169,83 @@ exports.verifyEmail = async (req, res) => {
       .json({ success: false, message: "Invalid or expired token" });
   }
 };
-// to verify the invited team member
-exports.verifyTeamMember = async (req, res) => {
-  try{
-      const token = req.query.token;
-
-    if (!token) {
-      return res.status(400).json({ message: "Token is required in query." });
-    }
-    const payload = jwt.verify(token, process.env.INVITE_SECRET);
-    const invitation = await Invitation.findOne({ token });
-
-    if (!invitation) {
-      return res.status(404).json({ message: "Invitation not found." });
-    }
-
-    if (invitation.expiresAt < Date.now()) {
-      return res.status(400).json({ message: "Invitation has expired." });
-    }
-
-    if (invitation.used) {
-      return res.status(400).json({ message: "Invitation already used." });
-    }
-    return res.status(200).json({
-      success: true,
-      email: payload.email,
-      message: "Valid invitation.",
-    });
-  } catch (err) {
-    console.error("Invitation verification error:", err);
-    return res.status(400).json({ message: "Invalid or expired token." });
-  }
-  }
-
-exports.registerInvitedTeamMember = async (req, res) => {
+// Create a team member directly (no email invite). Requires admin auth.
+exports.createTeamMember = async (req, res) => {
   try {
-    const { token, name, password } = req.body;
+    const { username, email, password, teamId: rawTeamId, roleId } = req.body;
 
-    if (!token || !name || !password) {
-      return res.status(400).json({ message: "All fields are required." });
+    // Resolve teamId: allow omission if the admin has an existing team membership
+    let teamId = rawTeamId;
+    if (!teamId && req.user) {
+      const adminUser = await User.findById(req.user.id);
+      const firstTeam = adminUser?.teams?.[0]?.teamId;
+      if (firstTeam) teamId = String(firstTeam);
     }
 
-    const payload = jwt.verify(token, process.env.INVITE_SECRET);
-    const invitation = await Invitation.findOne({ token });
-
-    if (!invitation) {
-      return res.status(404).json({ message: "Invitation not found." });
+    // If still no teamId, fallback to the only available team in the system (if exactly one exists)
+    if (!teamId) {
+      const teams = await TeamSetup.find({}).select('_id');
+      if (teams.length === 1) {
+        teamId = String(teams[0]._id);
+      }
     }
 
-    if (invitation.used) {
-      return res.status(400).json({ message: "Invitation already used." });
+    if (!username || !email || !password || !teamId || !roleId) {
+      return res.status(400).json({ success: false, message: 'username, email, password, teamId and roleId are required (no default team found)' });
     }
 
-    if (invitation.expiresAt < Date.now()) {
-      return res.status(400).json({ message: "Invitation expired." });
+    // Only admins can create team members
+    if (!req.user || !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Only admins can create team members' });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email: payload.email });
-    if (existingUser) {
-      return res.status(400).json({ message: "User already registered." });
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'User already exists' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const team = await TeamSetup.findById(teamId);
+    if (!team) {
+      return res.status(404).json({ success: false, message: 'Team not found' });
+    }
+
+    const role = await Role.findById(roleId);
+    if (!role) {
+      return res.status(404).json({ success: false, message: 'Role not found' });
+    }
 
     const newUser = new User({
-      name,
-      email: payload.email,
-      password: hashedPassword,
-      teams: [
-        {
-          teamId: invitation.teamId,
-          role: invitation.role || "member", // default to 'member' if not set
-          joinedAt: new Date(),
-        },
-      ],
+      username,
+      email,
+      password,
+      isVerified: true,
+      isAdmin: false,
+      teams: [{
+        teamId: team._id,
+        teamName: team.name,
+        role: 'member',
+        roleId: role._id,
+        permissions: role.permissions,
+        joinedAt: new Date()
+      }],
     });
 
     await newUser.save();
 
-    // Mark invitation as used
-    invitation.used = true;
-    await invitation.save();
-
-    // Generate login token
-    const loginToken = jwt.sign(
-      {
-        id: newUser._id,
-        email: newUser.email,
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
-
-    const team = await Team.findById(invitation.teamId);
-
     return res.status(201).json({
       success: true,
-      message: "Registration successful.",
-      token: loginToken,
-      profile: {
-        username: newUser.name,
+      message: 'Team member created successfully',
+      user: {
+        id: newUser._id,
+        username: newUser.username,
         email: newUser.email,
-        teams: [
-          {
-            teamId: team._id,
-            teamName: team.name,
-            role: invitation.role,
-            joinedAt: newUser.teams[0].joinedAt,
-          },
-        ],
+        isAdmin: newUser.isAdmin,
+        teams: newUser.teams,
       },
     });
   } catch (err) {
-    console.error("Register invited member error:", err);
-    return res.status(500).json({ message: "Something went wrong." });
+    console.error('Create team member error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 

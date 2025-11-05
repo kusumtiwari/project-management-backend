@@ -1,12 +1,12 @@
 const express = require("express");
 const router = express.Router();
 const AuthController = require("../controllers/AuthController");
+const { protect } = require("../middleware/authMiddleware");
 
 // Register (with team creation)
 router.post("/register", AuthController.register);
 router.post("/login", AuthController.login);
 router.get("/verify-email", AuthController.verifyEmail);
-router.get("/verify-team-member", AuthController.verifyTeamMember);
-router.post("/register-invited-member", AuthController.registerInvitedTeamMember);
+router.post("/create-team-member", protect, AuthController.createTeamMember);
 
 module.exports = router;
