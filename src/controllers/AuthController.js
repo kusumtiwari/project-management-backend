@@ -74,6 +74,20 @@ exports.register = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+// Logout: clear auth cookie
+exports.logout = async (req, res) => {
+  try {
+    res.clearCookie('token', {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+    });
+    return res.status(200).json({ success: true, message: 'Logged out' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
 // for user login 
 exports.login = async (req, res) => {
   const { email, password } = req.body;
@@ -110,6 +124,15 @@ exports.login = async (req, res) => {
       }
     );
 
+    const cookieOptions = {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    };
+
+    res.cookie('token', token, cookieOptions);
+
     res.status(200).json({
       success: true,
       message: "Login successful",
@@ -138,10 +161,16 @@ exports.verifyEmail = async (req, res) => {
     }
 
     if (user.isVerified) {
-      // Issue new access token
       const accessToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
         expiresIn: "1h",
       });
+      const cookieOptions = {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      };
+      res.cookie('token', accessToken, cookieOptions);
       return res.status(200).json({
         success: true,
         message: "Email already verified",
@@ -156,6 +185,13 @@ exports.verifyEmail = async (req, res) => {
     const accessToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
       expiresIn: "1h",
     });
+    const cookieOptions = {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    };
+    res.cookie('token', accessToken, cookieOptions);
 
     res.status(200).json({
       success: true,

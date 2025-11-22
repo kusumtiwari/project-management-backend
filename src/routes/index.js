@@ -1,5 +1,6 @@
 // src/routes/index.js
 const express = require("express");
+const {protect} = require('../middleware/authMiddleware')
 const router = express.Router();
 
 // Sub-routers (these are now protected)
@@ -14,11 +15,11 @@ router.get("/", (req, res) => {
   res.json({ message: "Welcome to PMS Backend!" });
 });
 
-router.use("/projects", projectRoutes);
-router.use("/tasks", taskRoutes);
-router.use("/roles", roleRoutes);
+router.use("/projects", protect, projectRoutes);
+router.use("/tasks", protect, taskRoutes);
+router.use("/roles",protect, roleRoutes);
 // Add other protected routes here like:
-router.use("/teams", teamRoutes);
-router.use("/dashboard", dashboardRoutes);
+router.use("/teams",protect, teamRoutes);
+router.use("/dashboard",protect, dashboardRoutes);
 
 module.exports = router;

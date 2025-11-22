@@ -21,22 +21,34 @@ exports.createProject = async (req, res) => {
 
 exports.getAllProjects = async (req, res) => {
   try {
-    // extract page and limit from query string (default: page 1, limit 10)
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-
-    // calculate skip value
     const skip = (page - 1) * limit;
 
-    // find projects with pagination
-    const projects = await Project.find()
+    let query = {};
+
+    // 🔓 Admin can see all projects
+    if (req.user.isAdmin) {
+      query = {};
+    }
+    // 🔑 Normal users see only what they should
+    else {
+      query = {
+        $or: [
+          { createdBy: req.user._id }, // user created it
+          { teamMembers: req.user._id }, // user is a team member
+          { permissions: req.user._id }, // user explicitly has permission (optional)
+        ],
+      };
+    }
+
+    const projects = await Project.find(query)
       .populate("teamMembers", "name email")
       .skip(skip)
       .limit(limit)
-      .sort({ createdAt: -1 }); // optional: sort newest first
+      .sort({ createdAt: -1 });
 
-    // get total count for pagination info
-    const totalProjects = await Project.countDocuments();
+    const totalProjects = await Project.countDocuments(query);
 
     res.status(200).json({
       success: true,

@@ -8,5 +8,6 @@ router.post("/register", AuthController.register);
 router.post("/login", AuthController.login);
 router.get("/verify-email", AuthController.verifyEmail);
 router.post("/create-team-member", protect, AuthController.createTeamMember);
+router.post("/logout", AuthController.logout);
 
 module.exports = router;
