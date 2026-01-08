@@ -11,7 +11,6 @@ exports.getAllPermissions = (req, res) => {
     "view_role",
     "edit_role",
     "delete_role",
-    "view_task",
     "create_task",
     "edit_task",
     "delete_task",

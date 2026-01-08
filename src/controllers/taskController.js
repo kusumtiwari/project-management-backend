@@ -1,6 +1,26 @@
 const Task = require("../models/Task");
 const Project = require("../models/Project");
 
+// GET ALL TASKS BY PROJECT
+exports.getTasksByProject = async (req, res) => {
+  try {
+    const { projectId } = req.params;
+
+    const tasks = await Task.find({ project: projectId }).populate(
+      "assignedTo",
+      "username email"
+    );
+
+    res.status(200).json({
+      success: true,
+      data: tasks,
+    });
+  } catch (err) {
+    console.error("Get tasks error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 exports.getProjectMembers = async (req, res) => {
   try {
     const { projectId } = req.params;
