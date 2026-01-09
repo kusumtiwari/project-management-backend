@@ -7,17 +7,39 @@ const taskSchema = new mongoose.Schema(
     description: String,
     status: {
       type: String,
-      enum: ["backlog", "in-progress", "review", "done", "deployed"],
+      enum: ["backlog", "in-progress", "review", "done", "deployed", "blocked"],
       default: "backlog",
     },
-    assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    priority: {
+      type: String,
+      enum: ["low", "medium", "high", "urgent"],
+      default: "medium"
+    },
+    assignedTo: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: "User",
+      default: null
+    },
     project: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Project",
       required: true,
     },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true
+    },
     deadline: Date,
     tags: [{ type: String }],
+    estimatedHours: {
+      type: Number,
+      min: 0
+    },
+    actualHours: {
+      type: Number,
+      min: 0
+    }
   },
   { timestamps: true }
 );

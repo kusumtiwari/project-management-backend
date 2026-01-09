@@ -4,16 +4,32 @@ const User = require("../models/User");
 exports.createTeamSetup = async (req, res) => {
   try {
     const { name } = req.body;
+
+    // Only admins and superadmins can create teams
+    if (!req.user.isAdmin && !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "Only administrators can create teams",
+      });
+    }
+
     const existingTeam = await TeamSetup.findOne({
       name
-    })
+    });
+
     if(existingTeam){
       return res.status(400).json({
         success: false,
         message: "A team with this name already exists.",
       });
     }
-    const newTeam = new TeamSetup({ name });
+
+    const newTeam = new TeamSetup({
+      name,
+      adminId: req.user.isSuperAdmin ? req.body.adminId || req.user._id : req.user._id,
+      createdBy: req.user._id
+    });
+
     await newTeam.save();
     await req.user.addTeam(newTeam._id, newTeam.name, "admin");
 
@@ -23,6 +39,11 @@ exports.createTeamSetup = async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Team created successfully",
+      team: {
+        _id: newTeam._id,
+        name: newTeam.name,
+        adminId: newTeam.adminId
+      },
       profile: {
         username: updatedUser.username,
         email: updatedUser.email,
@@ -36,7 +57,6 @@ exports.createTeamSetup = async (req, res) => {
 };
 
 // List members of a team
-
 exports.listTeamMembers = async (req, res) => {
   try {
     const { teamId } = req.params;
@@ -45,10 +65,35 @@ exports.listTeamMembers = async (req, res) => {
     const team = await TeamSetup.findById(teamId);
     if (!team) return res.status(404).json({ success: false, message: 'Team not found' });
 
+    // CRITICAL: Verify team belongs to user's admin scope
+    if (!req.user.isSuperAdmin) {
+      if (req.user.isAdmin) {
+        // Check if team belongs to this admin
+        const teamAdminId = team.adminId ? team.adminId.toString() : team.createdBy?.toString();
+        if (teamAdminId && teamAdminId !== req.user._id.toString()) {
+          return res.status(403).json({
+            success: false,
+            message: "You don't have access to this team"
+          });
+        }
+      } else {
+        // Members can only list teams they belong to
+        const userInTeam = req.user.teams.some(
+          t => t.teamId.toString() === teamId
+        );
+        if (!userInTeam) {
+          return res.status(403).json({
+            success: false,
+            message: "You don't have access to this team"
+          });
+        }
+      }
+    }
+
     const users = await User.find({ 'teams.teamId': teamId })
       .select('_id username email teams')
-      .populate('teams.roleId'); // Populate the roleId to get role details
-    
+      .populate('teams.roleId');
+
     // Map users to only include their role/permissions for THIS specific team
     const members = users.map(user => {
       const teamEntry = user.teams.find(t => t.teamId.toString() === teamId);
@@ -56,7 +101,7 @@ exports.listTeamMembers = async (req, res) => {
         _id: user._id,
         username: user.username,
         email: user.email,
-        role: teamEntry.roleId ? teamEntry.roleId.roleName : teamEntry.role, // Get roleName from populated roleId
+        role: teamEntry.roleId ? teamEntry.roleId.roleName : teamEntry.role,
         roleId: teamEntry.roleId,
         permissions: teamEntry.permissions,
         joinedAt: teamEntry.joinedAt
@@ -69,10 +114,29 @@ exports.listTeamMembers = async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
 // List all teams
 exports.listTeams = async (req, res) => {
   try {
-    const teams = await TeamSetup.find({}).select('_id name');
+    let query = {};
+
+    // CRITICAL: Admin scoping to prevent teams from other admins
+    if (!req.user.isSuperAdmin) {
+      if (req.user.isAdmin) {
+        // Admins see their own teams OR teams without adminId (backward compat)
+        query.$or = [
+          { adminId: req.user._id },
+          { adminId: { $exists: false } },
+          { adminId: null }
+        ];
+      } else {
+        // Members only see teams they belong to
+        const userTeamIds = req.user.teams.map(t => t.teamId);
+        query._id = { $in: userTeamIds };
+      }
+    }
+
+    const teams = await TeamSetup.find(query).select('_id name adminId createdBy');
     return res.status(200).json({ success: true, data: teams });
   } catch (err) {
     console.error('List teams error:', err);
@@ -83,7 +147,7 @@ exports.listTeams = async (req, res) => {
 
 exports.updateTeamMember = async (req, res) => {
   try {
-    const { memberId } = req.params;
+    const { memberId, teamId: paramsTeamId } = req.params;
     const { username, email, roleId } = req.body;
 
     if (!memberId) {
@@ -91,6 +155,42 @@ exports.updateTeamMember = async (req, res) => {
         success: false,
         message: "memberId is required",
       });
+    }
+
+    // Only admins and superadmins can update team members
+    if (!req.user.isAdmin && !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "Only administrators can update team members",
+      });
+    }
+
+    // Get team from params or body
+    const teamId = paramsTeamId || req.body.teamId;
+    if (!teamId) {
+      return res.status(400).json({
+        success: false,
+        message: "teamId is required",
+      });
+    }
+
+    // CRITICAL: Verify team belongs to user's admin scope
+    const team = await TeamSetup.findById(teamId);
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: "Team not found",
+      });
+    }
+
+    if (!req.user.isSuperAdmin) {
+      const teamAdminId = team.adminId ? team.adminId.toString() : team.createdBy?.toString();
+      if (teamAdminId && teamAdminId !== req.user._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to update members in this team"
+        });
+      }
     }
 
     const user = await User.findById(memberId);
@@ -108,7 +208,7 @@ exports.updateTeamMember = async (req, res) => {
     // Update role inside teams array
     if (roleId) {
       const teamIndex = user.teams.findIndex(
-        (t) => t.teamId.toString() === req.params.teamId
+        (t) => t.teamId.toString() === teamId
       );
 
       if (teamIndex !== -1) {
@@ -134,14 +234,44 @@ exports.updateTeamMember = async (req, res) => {
 
 exports.deleteTeamMember = async (req, res) => {
   try {
-    const { memberId } = req.params;
-    const { teamId } = req.body;
+    const { memberId, teamId: paramsTeamId } = req.params;
+    let { teamId } = req.body;
+
+    // Get team from params if not in body
+    if (!teamId) teamId = paramsTeamId;
 
     if (!memberId || !teamId) {
       return res.status(400).json({
         success: false,
         message: "memberId and teamId are required",
       });
+    }
+
+    // Only admins and superadmins can remove team members
+    if (!req.user.isAdmin && !req.user.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "Only administrators can remove team members",
+      });
+    }
+
+    // CRITICAL: Verify team belongs to user's admin scope
+    const team = await TeamSetup.findById(teamId);
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: "Team not found",
+      });
+    }
+
+    if (!req.user.isSuperAdmin) {
+      const teamAdminId = team.adminId ? team.adminId.toString() : team.createdBy?.toString();
+      if (teamAdminId && teamAdminId !== req.user._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to remove members from this team"
+        });
+      }
     }
 
     const user = await User.findById(memberId);

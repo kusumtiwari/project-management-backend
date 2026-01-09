@@ -43,13 +43,21 @@ exports.register = async (req, res) => {
         .json({ success: false, message: "User already exists" });
     }
     
+    // Check if this is the first user (should be superadmin)
+    const userCount = await User.countDocuments({});
+    const isSuperAdmin = userCount === 0;
+    
     // Create unverified user
+    // Business Rule: Normal registration creates Admins, first user is SuperAdmin
     const user = new User({
       username,
       email,
       password,
       isVerified: false, // email verification still required for self-signup
-      isAdmin: true,
+      userType: isSuperAdmin ? 'superadmin' : 'admin', // First user is superadmin, others are ADMINS by default
+      isAdmin: isSuperAdmin ? true : true, // All self-registered users (except first) are Admins
+      isSuperAdmin: isSuperAdmin,
+      createdBy: null, // Self-registered users have no creator
     });
     await user.save();
 
@@ -142,6 +150,9 @@ exports.login = async (req, res) => {
         email: user.email,
         teams: user.teams,
         isAdmin: user.isAdmin,
+        isSuperAdmin: user.isSuperAdmin,
+        userType: user.userType,
+        hasCompletedSetup: user.hasCompletedSetup,
       },
     });
   } catch (error) {
@@ -255,7 +266,11 @@ exports.createTeamMember = async (req, res) => {
       email,
       password,
       isVerified: true,
+      userType: 'member',
       isAdmin: false,
+      isSuperAdmin: false,
+      createdBy: req.user._id,
+      hasCompletedSetup: true,
       teams: [{
         teamId: team._id,
         teamName: team.name,

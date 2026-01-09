@@ -7,7 +7,18 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true },
     username: { type: String, required: true },
     isVerified: { type: Boolean, default: false },
-    isAdmin: { type: Boolean, default: false },
+    userType: { 
+      type: String, 
+      enum: ['superadmin', 'admin', 'member'], 
+      default: 'member' 
+    },
+    isAdmin: { type: Boolean, default: false }, // Keep for backward compatibility
+    isSuperAdmin: { type: Boolean, default: false },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null // null for self-registered superadmins, ObjectId for admin/member created by others
+    },
     teams: [
       {
         teamId: {

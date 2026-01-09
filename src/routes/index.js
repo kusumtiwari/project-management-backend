@@ -9,6 +9,7 @@ const teamRoutes = require("./teamSetup");
 const taskRoutes = require('./task')
 const roleRoutes = require('./role')
 const dashboardRoutes = require('./dashboard')
+const superadminRoutes = require('./superadmin')
 // Add more routes like teamRoutes when needed
 
 router.get("/", (req, res) => {
@@ -21,5 +22,6 @@ router.use("/roles",protect, roleRoutes);
 // Add other protected routes here like:
 router.use("/teams",protect, teamRoutes);
 router.use("/dashboard",protect, dashboardRoutes);
+router.use("/superadmin", superadminRoutes); // SuperAdmin routes have their own protection
 
 module.exports = router;
