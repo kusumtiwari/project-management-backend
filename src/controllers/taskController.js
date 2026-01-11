@@ -3,6 +3,14 @@ const Project = require("../models/Project");
 const User = require("../models/User");
 const { sendTaskNotificationEmail } = require("../utils/emailUtils");
 
+const isUserInProjectTeams = (userId, project, userModel) => {
+  const projectTeamIds = project.teams.map((t) => t.teamId.toString());
+
+  return userModel.teams.some((ut) =>
+    projectTeamIds.includes(ut.teamId.toString())
+  );
+};
+
 // GET ALL TASKS BY PROJECT
 exports.getTasksByProject = async (req, res) => {
   try {
@@ -14,31 +22,31 @@ exports.getTasksByProject = async (req, res) => {
     if (!project) {
       return res.status(404).json({
         success: false,
-        message: "Project not found"
+        message: "Project not found",
       });
     }
 
     // For members, only show tasks if they're part of the project
     if (!user.isSuperAdmin && !user.isAdmin) {
       const isMember = project.teamMembers.some(
-        member => member.userId.toString() === user._id.toString()
+        (member) => member.userId.toString() === user._id.toString()
       );
-      
+
       if (!isMember) {
         return res.status(403).json({
           success: false,
-          message: "Access denied: You are not assigned to this project"
+          message: "Access denied: You are not assigned to this project",
         });
       }
 
       // For members, only return tasks assigned to them or show all project tasks based on role
-      const tasks = await Task.find({ 
+      const tasks = await Task.find({
         project: projectId,
         $or: [
           { assignedTo: user._id }, // Tasks assigned to them
           { assignedTo: { $exists: false } }, // Unassigned tasks
-          { assignedTo: null } // Explicitly unassigned
-        ]
+          { assignedTo: null }, // Explicitly unassigned
+        ],
       }).populate("assignedTo", "username email");
 
       return res.status(200).json({
@@ -69,39 +77,60 @@ exports.getProjectMembers = async (req, res) => {
     const user = req.user;
 
     const project = await Project.findById(projectId)
-      .populate('teamMembers.userId', 'username email')
-      .populate('teams.teamId', 'name');
+      .populate("teamMembers.userId", "username email")
+      .populate("teams.teamId", "name")
+      .populate("adminId", "_id");
 
     if (!project) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Project not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
     }
 
-    // Check if user has access to this project
-    const projectTeamIds = project.teams?.map(t => t.teamId._id.toString()) || [project.teamId?.toString()];
-    const hasAccess = user.isSuperAdmin || 
-      user.isAdmin || 
-      projectTeamIds.some(teamId => 
-        user.teams.some(ut => ut.teamId.toString() === teamId)
-      ) ||
-      project.teamMembers.some(tm => tm.userId._id.toString() === user._id.toString());
+    // 🔐 ACCESS CHECK (FIXED)
+    const isSuperAdmin = user.isSuperAdmin === true;
+
+    const isProjectOwner =
+      project.adminId &&
+      project.adminId._id.toString() === user._id.toString();
+
+    const projectTeamIds =
+      project.teams?.map((t) => t.teamId?._id?.toString()).filter(Boolean) || [];
+
+    const isAdminInProjectTeam =
+      user.isAdmin &&
+      projectTeamIds.some((teamId) =>
+        user.teams?.some(
+          (ut) => ut.teamId?.toString() === teamId
+        )
+      );
+
+    const isProjectMember = project.teamMembers.some(
+      (tm) => tm.userId?._id?.toString() === user._id.toString()
+    );
+
+    const hasAccess =
+      isSuperAdmin ||
+      isProjectOwner ||
+      isAdminInProjectTeam ||
+      isProjectMember;
 
     if (!hasAccess) {
       return res.status(403).json({
         success: false,
-        message: "You don't have access to this project"
+        message: "You don't have access to this project",
       });
     }
 
-    // Return formatted members for dropdown
+    // ✅ RESPONSE FORMAT (unchanged)
     const members = project.teamMembers.map((member) => ({
       _id: member.userId._id,
       username: member.userId.username,
       email: member.userId.email,
       role: member.role,
-      value: member.userId._id, // For dropdown value
-      label: `${member.userId.username} (${member.userId.email})` // For dropdown label
+      value: member.userId._id,
+      label: `${member.userId.username} (${member.userId.email})`,
     }));
 
     res.status(200).json({
@@ -109,16 +138,26 @@ exports.getProjectMembers = async (req, res) => {
       data: members,
     });
   } catch (err) {
-    console.error('Get project members error:', err);
-    res.status(500).json({ success: false, message: err.message });
+    console.error("Get project members error:", err);
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 };
-
-
 // CREATE NEW TASK
 exports.createTask = async (req, res) => {
   try {
-    const { title, description, status, assignedTo, project, deadline, tags, priority } = req.body;
+    const {
+      title,
+      description,
+      status,
+      assignedTo,
+      project,
+      deadline,
+      tags,
+      priority,
+    } = req.body;
     const user = req.user;
 
     if (!title || !project) {
@@ -130,9 +169,9 @@ exports.createTask = async (req, res) => {
 
     // ensure project exists and populate necessary fields
     const existingProject = await Project.findById(project)
-      .populate('teams.teamId')
-      .populate('teamMembers.userId');
-      
+      .populate("teams.teamId")
+      .populate("teamMembers.userId");
+
     if (!existingProject) {
       return res.status(404).json({
         success: false,
@@ -142,18 +181,26 @@ exports.createTask = async (req, res) => {
 
     // Check if user has permission to create tasks
     // Permission inheritance: if user can access project, they can create tasks
-    const projectTeamIds = existingProject.teams?.map(t => t.teamId._id.toString()) || [existingProject.teamId?.toString()];
-    const canCreateTask = user.isSuperAdmin || 
+    const projectTeamIds = existingProject.teams?.map((t) =>
+      t.teamId._id.toString()
+    ) || [existingProject.teamId?.toString()];
+    const canCreateTask =
+      user.isSuperAdmin ||
       user.isAdmin ||
-      projectTeamIds.some(teamId => {
-        const userTeam = user.teams.find(ut => ut.teamId.toString() === teamId);
-        return userTeam && (
-          userTeam.permissions.includes('create_task') ||
-          userTeam.permissions.includes('edit_project') || // Project permission implies task permission
-          userTeam.role === 'admin'
+      projectTeamIds.some((teamId) => {
+        const userTeam = user.teams.find(
+          (ut) => ut.teamId.toString() === teamId
+        );
+        return (
+          userTeam &&
+          (userTeam.permissions.includes("create_task") ||
+            userTeam.permissions.includes("edit_project") || // Project permission implies task permission
+            userTeam.role === "admin")
         );
       }) ||
-      existingProject.teamMembers.some(tm => tm.userId._id.toString() === user._id.toString());
+      existingProject.teamMembers.some(
+        (tm) => tm.userId._id.toString() === user._id.toString()
+      );
 
     if (!canCreateTask) {
       return res.status(403).json({
@@ -162,16 +209,37 @@ exports.createTask = async (req, res) => {
       });
     }
 
-    // 🔐 VALIDATE ASSIGNEE BELONGS TO PROJECT
     if (assignedTo) {
-      const isMember = existingProject.teamMembers.some(
-        (m) => m.userId._id.toString() === assignedTo
-      );
+      // members can ONLY assign to themselves
+      if (
+        !user.isAdmin &&
+        !user.isSuperAdmin &&
+        assignedTo !== user._id.toString()
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only assign tasks to yourself.",
+        });
+      }
 
-      if (!isMember) {
+      const assignedUser = await User.findById(assignedTo);
+      if (!assignedUser) {
         return res.status(400).json({
           success: false,
-          message: "Assigned user is not part of this project.",
+          message: "Assigned user not found.",
+        });
+      }
+
+      const isInProjectTeams = isUserInProjectTeams(
+        assignedUser._id,
+        existingProject,
+        assignedUser
+      );
+
+      if (!isInProjectTeams) {
+        return res.status(400).json({
+          success: false,
+          message: "Assigned user is not part of project teams.",
         });
       }
     }
@@ -179,9 +247,12 @@ exports.createTask = async (req, res) => {
     // normalize tags
     let normalizedTags = [];
     if (Array.isArray(tags)) {
-      normalizedTags = tags.map(t => t.trim()).filter(Boolean);
+      normalizedTags = tags.map((t) => t.trim()).filter(Boolean);
     } else if (typeof tags === "string") {
-      normalizedTags = tags.split(",").map(t => t.trim()).filter(Boolean);
+      normalizedTags = tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
     }
 
     const newTask = new Task({
@@ -197,12 +268,12 @@ exports.createTask = async (req, res) => {
     });
 
     await newTask.save();
-    
+
     // Populate the created task
     await newTask.populate([
-      { path: 'assignedTo', select: 'username email' },
-      { path: 'project', select: 'name' },
-      { path: 'createdBy', select: 'username email' }
+      { path: "assignedTo", select: "username email" },
+      { path: "project", select: "name" },
+      { path: "createdBy", select: "username email" },
     ]);
 
     res.status(201).json({
@@ -215,8 +286,6 @@ exports.createTask = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
-
-
 // UPDATE TASK (title, description, status, assignedTo, deadline, tags)
 exports.updateTask = async (req, res) => {
   try {
@@ -234,23 +303,24 @@ exports.updateTask = async (req, res) => {
     // Access control: Members can only update tasks assigned to them and only certain fields
     if (!user.isSuperAdmin && !user.isAdmin) {
       // Check if user is assigned to this task or is part of the project
-      const isAssignedToTask = task.assignedTo && task.assignedTo.toString() === user._id.toString();
+      const isAssignedToTask =
+        task.assignedTo && task.assignedTo.toString() === user._id.toString();
       const isProjectMember = task.project.teamMembers.some(
-        member => member.userId.toString() === user._id.toString()
+        (member) => member.userId.toString() === user._id.toString()
       );
 
       if (!isAssignedToTask && !isProjectMember) {
         return res.status(403).json({
           success: false,
-          message: "Access denied: You can only update tasks assigned to you"
+          message: "Access denied: You can only update tasks assigned to you",
         });
       }
 
       // Members can only update status and add comments (if we had comments)
-      const allowedUpdates = ['status'];
+      const allowedUpdates = ["status"];
       const memberUpdates = {};
-      
-      Object.keys(updates).forEach(key => {
+
+      Object.keys(updates).forEach((key) => {
         if (allowedUpdates.includes(key)) {
           memberUpdates[key] = updates[key];
         }
@@ -259,7 +329,7 @@ exports.updateTask = async (req, res) => {
       if (Object.keys(memberUpdates).length === 0) {
         return res.status(400).json({
           success: false,
-          message: "Members can only update task status"
+          message: "Members can only update task status",
         });
       }
 
@@ -270,31 +340,51 @@ exports.updateTask = async (req, res) => {
     const originalStatus = task.status;
     const originalAssignee = task.assignedTo;
 
-    // 🔐 validate reassignment (only for admins/superadmins)
-    if (updates.assignedTo && (user.isAdmin || user.isSuperAdmin)) {
+    if (updates.assignedTo) {
+      if (
+        !user.isAdmin &&
+        !user.isSuperAdmin &&
+        updates.assignedTo !== user._id.toString()
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "You can only assign tasks to yourself.",
+        });
+      }
+
+      const assignedUser = await User.findById(updates.assignedTo);
       const project = await Project.findById(task.project._id);
-      const isMember = project.teamMembers.some(
-        (m) => m.userId.toString() === updates.assignedTo
+
+      const isInProjectTeams = isUserInProjectTeams(
+        assignedUser._id,
+        project,
+        assignedUser
       );
 
-      if (!isMember) {
+      if (!isInProjectTeams) {
         return res.status(400).json({
           success: false,
-          message: "Assigned user is not part of this project.",
+          message: "Assigned user is not part of project teams.",
         });
       }
     }
 
     const updated = await Task.findByIdAndUpdate(taskId, updates, {
       new: true,
-    }).populate("assignedTo", "username email").populate("project", "name");
+    })
+      .populate("assignedTo", "username email")
+      .populate("project", "name");
 
     // Send notifications to admins when task status is updated by member
-    if (originalStatus !== updated.status && !user.isAdmin && !user.isSuperAdmin) {
+    if (
+      originalStatus !== updated.status &&
+      !user.isAdmin &&
+      !user.isSuperAdmin
+    ) {
       try {
         await sendTaskStatusNotificationToAdmins(updated, originalStatus, user);
       } catch (notifError) {
-        console.error('Notification error:', notifError);
+        console.error("Notification error:", notifError);
         // Don't fail the task update if notification fails
       }
     }
@@ -309,16 +399,20 @@ exports.updateTask = async (req, res) => {
 };
 
 // Helper function to notify admins about task status changes
-async function sendTaskStatusNotificationToAdmins(task, originalStatus, updatedBy) {
+async function sendTaskStatusNotificationToAdmins(
+  task,
+  originalStatus,
+  updatedBy
+) {
   try {
     // Find all users who are admins in the same team as the project
-    const project = await Project.findById(task.project._id).populate('teamId');
-    
+    const project = await Project.findById(task.project._id).populate("teamId");
+
     // Find admin users who have this team in their teams array
     const adminUsers = await User.find({
-      'teams.teamId': project.teamId._id,
-      'teams.role': 'admin',
-      isAdmin: true
+      "teams.teamId": project.teamId._id,
+      "teams.role": "admin",
+      isAdmin: true,
     });
 
     // Also notify superadmins
@@ -333,7 +427,7 @@ async function sendTaskStatusNotificationToAdmins(task, originalStatus, updatedB
         console.log(`Task: ${task.title}`);
         console.log(`Status changed from ${originalStatus} to ${task.status}`);
         console.log(`Changed by: ${updatedBy.username}`);
-        
+
         // Uncomment when you implement the email function
         // await sendTaskNotificationEmail(admin, task, originalStatus, updatedBy);
       } catch (emailError) {
@@ -341,10 +435,9 @@ async function sendTaskStatusNotificationToAdmins(task, originalStatus, updatedB
       }
     }
   } catch (error) {
-    console.error('Error in sendTaskStatusNotificationToAdmins:', error);
+    console.error("Error in sendTaskStatusNotificationToAdmins:", error);
   }
 }
-
 
 // DELETE TASK
 exports.deleteTask = async (req, res) => {
@@ -352,7 +445,9 @@ exports.deleteTask = async (req, res) => {
     const { taskId } = req.params;
     const deleted = await Task.findByIdAndDelete(taskId);
     if (!deleted) {
-      return res.status(404).json({ success: false, message: "Task not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Task not found" });
     }
     res.status(200).json({ success: true, message: "Task deleted" });
   } catch (err) {

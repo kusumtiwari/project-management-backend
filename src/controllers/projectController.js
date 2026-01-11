@@ -6,7 +6,7 @@ const TeamSetup = require("../models/TeamSetup");
 const hasPermission = (user, teamId, permissionNeeded) => {
   // SuperAdmins have all permissions
   if (user.isSuperAdmin) return true;
-  
+
   // Admins have permissions within their teams
   if (user.isAdmin) {
     const teamEntry = user.teams.find(
@@ -30,17 +30,17 @@ const hasPermission = (user, teamId, permissionNeeded) => {
 // Create a project with multiple teams and members
 exports.createProject = async (req, res) => {
   try {
-    const { name, teams, teamMembers, status, deadline, description, priority } = req.body;
+    const { name, teams, status, deadline, description, priority } = req.body;
 
     // Validate required fields
-    if (!name || !teams || teams.length === 0) {
+    if (!name || !teams || !Array.isArray(teams) || teams.length === 0) {
       return res.status(400).json({
         success: false,
         message: "Project name and at least one team are required",
       });
     }
 
-    // CRITICAL: Only admins and superadmins can create projects
+    // Only Admins or SuperAdmins can create
     if (!req.user.isAdmin && !req.user.isSuperAdmin) {
       return res.status(403).json({
         success: false,
@@ -48,82 +48,55 @@ exports.createProject = async (req, res) => {
       });
     }
 
-    // Validate all teams exist
-    const teamIds = teams.map(t => typeof t === 'string' ? t : t.teamId);
-    const validTeams = await TeamSetup.find({ _id: { $in: teamIds } });
-
-    if (validTeams.length !== teamIds.length) {
+    // Validate all team IDs exist
+    const validTeams = await TeamSetup.find({ _id: { $in: teams } });
+    if (validTeams.length !== teams.length) {
       return res.status(404).json({
         success: false,
         message: "One or more teams not found",
       });
     }
 
-    // Check if user has permission to create project in at least one team
-    const hasPermissionInAnyTeam = teamIds.some(teamId =>
+    // Check permission in at least one team
+    const hasPermissionInAnyTeam = teams.some((teamId) =>
       hasPermission(req.user, teamId, "create_project")
     );
-
     if (!hasPermissionInAnyTeam) {
       return res.status(403).json({
         success: false,
-        message: "You don't have permission to create projects in any of these teams",
+        message:
+          "You don't have permission to create projects in any of these teams",
       });
     }
 
-    // Format teams
-    const formattedTeams = teamIds.map(teamId => ({
+    // Format teams for Project schema
+    const formattedTeams = teams.map((teamId) => ({
       teamId,
       addedAt: new Date(),
     }));
 
-    // Format and validate team members if provided
-    let formattedMembers = [];
-    if (teamMembers && teamMembers.length > 0) {
-      // Validate team members belong to at least one of the project teams
-      const users = await User.find({
-        _id: { $in: teamMembers.map(tm => tm.userId || tm) },
-        "teams.teamId": { $in: teamIds },
-      });
-
-      // Format with assignment details
-      formattedMembers = teamMembers.map((member) => {
-        const userId = member.userId || member;
-        const user = users.find(u => u._id.toString() === userId.toString());
-        const userTeam = user?.teams.find(t => teamIds.includes(t.teamId.toString()));
-
-        return {
-          userId,
-          teamId: member.teamId || userTeam?.teamId || teamIds[0],
-          role: member.role || "member",
-          assignedAt: new Date(),
-        };
-      });
-    }
-
+    // Create new project
     const newProject = new Project({
       name,
       teams: formattedTeams,
-      teamId: teamIds[0], // Keep first team for backward compatibility
-      teamMembers: formattedMembers,
+      teamId: teams[0], // backward compatibility for single team
       status: status || "Not Started",
       priority: priority || "medium",
       deadline,
       description,
       createdBy: req.user._id,
-      // CRITICAL: Set adminId to enforce ownership isolation
-      // Superadmins can create projects for any admin, otherwise use current user's adminId
-      adminId: req.user.isSuperAdmin ? req.body.adminId || req.user._id : req.user._id,
+      adminId: req.user.isSuperAdmin
+        ? req.body.adminId || req.user._id
+        : req.user._id,
     });
 
     await newProject.save();
 
-    // Populate fields
+    // Populate related fields
     await newProject.populate([
-      { path: "teamMembers.userId", select: "username email" },
       { path: "teams.teamId", select: "name" },
       { path: "createdBy", select: "username email" },
-      { path: "adminId", select: "username email" }
+      { path: "adminId", select: "username email" },
     ]);
 
     res.status(201).json({
@@ -137,7 +110,6 @@ exports.createProject = async (req, res) => {
   }
 };
 
-// Get all projects (filtered by adminId for proper isolation)
 exports.getAllProjects = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -147,27 +119,22 @@ exports.getAllProjects = async (req, res) => {
 
     let query = {};
 
-    // CRITICAL: Admin scoping to prevent data leakage between admins
-    // SuperAdmins see ALL projects (no admin scoping)
+    // 🔐 Role-based scoping
     if (!req.user.isSuperAdmin) {
-      // Admins see their own projects OR projects where adminId matches their ID
       if (req.user.isAdmin) {
-        // For admins: show projects where adminId equals their ID OR adminId is null/undefined (backward compat)
-        // This ensures existing projects still show while new projects are properly isolated
-       query.adminId = req.user._id;
-        
+        query.adminId = req.user._id;
       } else {
-        // Members: Only show projects they are assigned to
-        query['teamMembers.userId'] = req.user._id;
+        // members only see projects they are assigned to
+        query["teamMembers.userId"] = req.user._id;
       }
     }
 
-    // If teamId is provided, add team filter (still within admin scope)
+    // 🔍 Team filter
     if (teamId) {
-      // CRITICAL: Verify team belongs to user's admin scope
       if (!req.user.isSuperAdmin && req.user.isAdmin) {
-        // Check if team belongs to this admin
-        const userTeamIds = req.user.teams.map((t) => t.teamId.toString());
+        const userTeamIds = req.user.teams.map((t) =>
+          t.teamId.toString()
+        );
         if (!userTeamIds.includes(teamId.toString())) {
           return res.status(403).json({
             success: false,
@@ -175,21 +142,18 @@ exports.getAllProjects = async (req, res) => {
           });
         }
       }
-      query.teamId = teamId;
+      query["teams.teamId"] = teamId;
     } else if (!req.user.isSuperAdmin && !req.user.isAdmin) {
-      // For members without teamId, filter by teams they belong to
       const userTeamIds = req.user.teams.map((t) => t.teamId);
       if (userTeamIds.length > 0) {
-        query.teamId = { $in: userTeamIds };
+        query["teams.teamId"] = { $in: userTeamIds };
       }
     }
 
-    console.log('getAllProjects query:', JSON.stringify(query, null, 2));
-    console.log('User:', { id: req.user._id, isAdmin: req.user.isAdmin, isSuperAdmin: req.user.isSuperAdmin });
+    console.log("getAllProjects query:", JSON.stringify(query, null, 2));
 
     const projects = await Project.find(query)
-      .populate("teamMembers.userId", "username email")
-      .populate("teamId", "name")
+      .populate("teams.teamId", "name") // ✅ populate team name
       .populate("adminId", "username email")
       .skip(skip)
       .limit(limit)
@@ -197,9 +161,35 @@ exports.getAllProjects = async (req, res) => {
 
     const totalProjects = await Project.countDocuments(query);
 
+    // 🧹 Clean response
+    const cleanProjects = projects.map((proj) => ({
+      _id: proj._id,
+      name: proj.name,
+      description: proj.description,
+      status: proj.status,
+      priority: proj.priority,
+      deadline: proj.deadline,
+      createdAt: proj.createdAt,
+
+      admin: proj.adminId
+        ? {
+            _id: proj.adminId._id,
+            username: proj.adminId.username,
+            email: proj.adminId.email,
+          }
+        : null,
+
+      // ✅ ONLY teams (id + name)
+      teams: (proj.teams || []).map((t) => ({
+        _id: t.teamId?._id,
+        name: t.teamId?.name,
+        addedAt: t.addedAt,
+      })),
+    }));
+
     res.status(200).json({
       success: true,
-      data: projects,
+      data: cleanProjects,
       pagination: {
         totalProjects,
         currentPage: page,
@@ -210,7 +200,10 @@ exports.getAllProjects = async (req, res) => {
     });
   } catch (err) {
     console.error("Get all projects error:", err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 };
 
@@ -235,20 +228,22 @@ exports.getProjectById = async (req, res) => {
     if (!req.user.isSuperAdmin) {
       // Admins can access their own projects OR projects without adminId (backward compat)
       if (req.user.isAdmin) {
-        const adminIdMatches = project.adminId &&
-                              project.adminId.toString() === req.user._id.toString();
+        const adminIdMatches =
+          project.adminId &&
+          project.adminId.toString() === req.user._id.toString();
         const noAdminId = !project.adminId;
 
         if (!adminIdMatches && !noAdminId) {
           return res.status(403).json({
             success: false,
-            message: "You don't have access to this project (admin ownership required)",
+            message:
+              "You don't have access to this project (admin ownership required)",
           });
         }
       } else {
         // Members: Check if they are assigned to this project
         const isAssignedToProject = project.teamMembers.some(
-          member => member.userId.toString() === req.user._id.toString()
+          (member) => member.userId.toString() === req.user._id.toString()
         );
 
         if (!isAssignedToProject) {
@@ -273,7 +268,7 @@ exports.updateProject = async (req, res) => {
     const { id } = req.params;
     const updates = req.body;
 
-    const project = await Project.findById(id).populate('teams.teamId');
+    const project = await Project.findById(id).populate("teams.teamId");
     if (!project) {
       return res.status(404).json({
         success: false,
@@ -285,14 +280,16 @@ exports.updateProject = async (req, res) => {
     if (!req.user.isSuperAdmin) {
       // Admins can edit their own projects OR projects without adminId (backward compat)
       if (req.user.isAdmin) {
-        const adminIdMatches = project.adminId &&
-                              project.adminId.toString() === req.user._id.toString();
+        const adminIdMatches =
+          project.adminId &&
+          project.adminId.toString() === req.user._id.toString();
         const noAdminId = !project.adminId;
 
         if (!adminIdMatches && !noAdminId) {
           return res.status(403).json({
             success: false,
-            message: "You don't have permission to edit this project (admin ownership required)",
+            message:
+              "You don't have permission to edit this project (admin ownership required)",
           });
         }
       } else {
@@ -305,10 +302,11 @@ exports.updateProject = async (req, res) => {
     }
 
     // Check permission - user must have edit permission in at least one of the project teams
-    const projectTeamIds = project.teams.map(t => t.teamId._id.toString());
-    const hasEditPermission = projectTeamIds.some(teamId =>
-      hasPermission(req.user, teamId, "edit_project")
-    ) || project.createdBy.toString() === req.user._id.toString();
+    const projectTeamIds = project.teams.map((t) => t.teamId._id.toString());
+    const hasEditPermission =
+      projectTeamIds.some((teamId) =>
+        hasPermission(req.user, teamId, "edit_project")
+      ) || project.createdBy.toString() === req.user._id.toString();
 
     if (!hasEditPermission && !req.user.isSuperAdmin) {
       return res.status(403).json({
@@ -319,7 +317,9 @@ exports.updateProject = async (req, res) => {
 
     // Handle teams update
     if (updates.teams && Array.isArray(updates.teams)) {
-      const teamIds = updates.teams.map(t => typeof t === 'string' ? t : t.teamId);
+      const teamIds = updates.teams.map((t) =>
+        typeof t === "string" ? t : t.teamId
+      );
       const validTeams = await TeamSetup.find({ _id: { $in: teamIds } });
 
       if (validTeams.length !== teamIds.length) {
@@ -329,7 +329,7 @@ exports.updateProject = async (req, res) => {
         });
       }
 
-      updates.teams = teamIds.map(teamId => ({
+      updates.teams = teamIds.map((teamId) => ({
         teamId,
         addedAt: new Date(),
       }));
@@ -340,10 +340,10 @@ exports.updateProject = async (req, res) => {
 
     // Handle team members update
     if (updates.teamMembers && Array.isArray(updates.teamMembers)) {
-      const memberUserIds = updates.teamMembers.map(tm => tm.userId || tm);
-      const availableTeamIds = updates.teams ?
-        updates.teams.map(t => t.teamId) :
-        projectTeamIds;
+      const memberUserIds = updates.teamMembers.map((tm) => tm.userId || tm);
+      const availableTeamIds = updates.teams
+        ? updates.teams.map((t) => t.teamId)
+        : projectTeamIds;
 
       // Validate team members belong to project teams
       const users = await User.find({
@@ -354,8 +354,10 @@ exports.updateProject = async (req, res) => {
       // Format team members with proper structure
       updates.teamMembers = updates.teamMembers.map((member) => {
         const userId = member.userId || member;
-        const user = users.find(u => u._id.toString() === userId.toString());
-        const userTeam = user?.teams.find(t => availableTeamIds.includes(t.teamId.toString()));
+        const user = users.find((u) => u._id.toString() === userId.toString());
+        const userTeam = user?.teams.find((t) =>
+          availableTeamIds.includes(t.teamId.toString())
+        );
 
         return {
           userId,
@@ -372,13 +374,14 @@ exports.updateProject = async (req, res) => {
     // CRITICAL: Never allow changing adminId (ownership transfer requires special endpoint)
     delete updates.adminId;
 
-    const updated = await Project.findByIdAndUpdate(id, updates, { new: true })
-      .populate([
-        { path: "teamMembers.userId", select: "username email" },
-        { path: "teams.teamId", select: "name" },
-        { path: "createdBy", select: "username email" },
-        { path: "adminId", select: "username email" }
-      ]);
+    const updated = await Project.findByIdAndUpdate(id, updates, {
+      new: true,
+    }).populate([
+      { path: "teamMembers.userId", select: "username email" },
+      { path: "teams.teamId", select: "name" },
+      { path: "createdBy", select: "username email" },
+      { path: "adminId", select: "username email" },
+    ]);
 
     res.status(200).json({
       success: true,
@@ -408,14 +411,16 @@ exports.deleteProject = async (req, res) => {
     // Only the owning admin or superadmin can delete a project
     if (!req.user.isSuperAdmin) {
       if (req.user.isAdmin) {
-        const adminIdMatches = project.adminId &&
-                              project.adminId.toString() === req.user._id.toString();
+        const adminIdMatches =
+          project.adminId &&
+          project.adminId.toString() === req.user._id.toString();
         const noAdminId = !project.adminId;
 
         if (!adminIdMatches && !noAdminId) {
           return res.status(403).json({
             success: false,
-            message: "You don't have permission to delete this project (admin ownership required)",
+            message:
+              "You don't have permission to delete this project (admin ownership required)",
           });
         }
       } else {
@@ -427,10 +432,13 @@ exports.deleteProject = async (req, res) => {
     }
 
     // Check permission - user must have delete permission or be the creator
-    const projectTeamIds = project.teams?.map(t => t.teamId) || [project.teamId];
-    const hasDeletePermission = projectTeamIds.some(teamId =>
-      hasPermission(req.user, teamId, "delete_project")
-    ) || project.createdBy?.toString() === req.user._id.toString();
+    const projectTeamIds = project.teams?.map((t) => t.teamId) || [
+      project.teamId,
+    ];
+    const hasDeletePermission =
+      projectTeamIds.some((teamId) =>
+        hasPermission(req.user, teamId, "delete_project")
+      ) || project.createdBy?.toString() === req.user._id.toString();
 
     if (!hasDeletePermission && !req.user.isSuperAdmin) {
       return res.status(403).json({
@@ -440,7 +448,7 @@ exports.deleteProject = async (req, res) => {
     }
 
     // Also delete all tasks associated with this project
-    const Task = require('../models/Task');
+    const Task = require("../models/Task");
     await Task.deleteMany({ project: id });
 
     await Project.findByIdAndDelete(id);
@@ -455,15 +463,13 @@ exports.deleteProject = async (req, res) => {
   }
 };
 
-// Get project members for task assignment
 exports.getProjectMembers = async (req, res) => {
   try {
     const { id } = req.params;
 
     const project = await Project.findById(id)
-      .populate('teamMembers.userId', 'username email')
-      .populate('teams.teamId', 'name')
-      .populate('adminId', 'username email');
+      .populate("teams.teamId", "name")
+      .populate("teamMembers.userId", "username email");
 
     if (!project) {
       return res.status(404).json({
@@ -472,38 +478,36 @@ exports.getProjectMembers = async (req, res) => {
       });
     }
 
-    // CRITICAL: Admin ownership verification to prevent data leakage
+    // 🔐 ACCESS CONTROL (TEAM-BASED)
     if (!req.user.isSuperAdmin) {
-      // Admins can only access their OWN projects
-      if (req.user.isAdmin) {
-        if (project.adminId.toString() !== req.user._id.toString()) {
-          return res.status(403).json({
-            success: false,
-            message: "You don't have access to this project (admin ownership required)",
-          });
-        }
-      } else {
-        // Members: Check if they are assigned to this project
-        const hasAccess = req.user.isSuperAdmin ||
-          project.teamMembers.some(tm => tm.userId._id.toString() === req.user._id.toString());
+      const projectTeamIds = project.teams.map(t =>
+        t.teamId._id.toString()
+      );
 
-        if (!hasAccess) {
-          return res.status(403).json({
-            success: false,
-            message: "You don't have access to this project",
-          });
-        }
+      const userTeamIds = req.user.teams.map(t =>
+        t.teamId.toString()
+      );
+
+      const hasTeamAccess = projectTeamIds.some(teamId =>
+        userTeamIds.includes(teamId)
+      );
+
+      if (!hasTeamAccess) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have access to this project",
+        });
       }
     }
 
-    // Return project members with their details
-    const members = project.teamMembers.map(tm => ({
+    // ✅ FORMAT MEMBERS
+    const members = (project.teamMembers || []).map(tm => ({
       _id: tm.userId._id,
       username: tm.userId.username,
       email: tm.userId.email,
       role: tm.role,
+      teamId: tm.teamId,
       assignedAt: tm.assignedAt,
-      teamId: tm.teamId
     }));
 
     res.status(200).json({
@@ -511,13 +515,18 @@ exports.getProjectMembers = async (req, res) => {
       data: {
         projectId: project._id,
         projectName: project.name,
-        adminId: project.adminId,
-        members: members,
-        teams: project.teams || [{ teamId: project.teamId }]
+        teams: project.teams.map(t => ({
+          _id: t.teamId._id,
+          name: t.teamId.name,
+        })),
+        members,
       },
     });
   } catch (err) {
     console.error("Get project members error:", err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
   }
 };
