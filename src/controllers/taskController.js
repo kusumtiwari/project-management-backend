@@ -17,7 +17,6 @@ exports.getTasksByProject = async (req, res) => {
     const { projectId } = req.params;
     const user = req.user;
 
-    // Check if the project exists
     const project = await Project.findById(projectId);
     if (!project) {
       return res.status(404).json({
@@ -26,27 +25,25 @@ exports.getTasksByProject = async (req, res) => {
       });
     }
 
-    // For members, only show tasks if they're part of the project
+    // 👤 MEMBER ACCESS CHECK
     if (!user.isSuperAdmin && !user.isAdmin) {
-      const isMember = project.teamMembers.some(
-        (member) => member.userId.toString() === user._id.toString()
+      const userTeamIds = user.teams.map(t => t.teamId.toString());
+
+      const hasAccess = project.teams.some(t =>
+        userTeamIds.includes(t.teamId.toString())
       );
 
-      if (!isMember) {
+      if (!hasAccess) {
         return res.status(403).json({
           success: false,
-          message: "Access denied: You are not assigned to this project",
+          message: "Access denied to this project",
         });
       }
 
-      // For members, only return tasks assigned to them or show all project tasks based on role
+      // 🔐 MEMBER → ONLY assigned tasks
       const tasks = await Task.find({
         project: projectId,
-        $or: [
-          { assignedTo: user._id }, // Tasks assigned to them
-          { assignedTo: { $exists: false } }, // Unassigned tasks
-          { assignedTo: null }, // Explicitly unassigned
-        ],
+        assignedTo: user._id,
       }).populate("assignedTo", "username email");
 
       return res.status(200).json({
@@ -55,11 +52,9 @@ exports.getTasksByProject = async (req, res) => {
       });
     }
 
-    // For admins and superadmins, show all tasks
-    const tasks = await Task.find({ project: projectId }).populate(
-      "assignedTo",
-      "username email"
-    );
+    // 👑 ADMIN / SUPERADMIN → ALL TASKS
+    const tasks = await Task.find({ project: projectId })
+      .populate("assignedTo", "username email");
 
     res.status(200).json({
       success: true,
@@ -70,6 +65,7 @@ exports.getTasksByProject = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
 
 exports.getProjectMembers = async (req, res) => {
   try {
@@ -152,7 +148,8 @@ exports.createTask = async (req, res) => {
       title,
       description,
       status,
-      assignedTo,
+      assignedTo, // Now an array
+      teams, // Now required array
       project,
       deadline,
       tags,
@@ -160,6 +157,7 @@ exports.createTask = async (req, res) => {
     } = req.body;
     const user = req.user;
 
+    // Validation
     if (!title || !project) {
       return res.status(400).json({
         success: false,
@@ -167,7 +165,14 @@ exports.createTask = async (req, res) => {
       });
     }
 
-    // ensure project exists and populate necessary fields
+    if (!teams || !Array.isArray(teams) || teams.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one team must be selected.",
+      });
+    }
+
+    // Ensure project exists and populate necessary fields
     const existingProject = await Project.findById(project)
       .populate("teams.teamId")
       .populate("teamMembers.userId");
@@ -179,11 +184,20 @@ exports.createTask = async (req, res) => {
       });
     }
 
-    // Check if user has permission to create tasks
-    // Permission inheritance: if user can access project, they can create tasks
+    // Validate that all selected teams belong to the project
     const projectTeamIds = existingProject.teams?.map((t) =>
       t.teamId._id.toString()
-    ) || [existingProject.teamId?.toString()];
+    ) || [];
+
+    const invalidTeams = teams.filter(teamId => !projectTeamIds.includes(teamId));
+    if (invalidTeams.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "One or more selected teams do not belong to this project.",
+      });
+    }
+
+    // Check if user has permission to create tasks
     const canCreateTask =
       user.isSuperAdmin ||
       user.isAdmin ||
@@ -194,7 +208,7 @@ exports.createTask = async (req, res) => {
         return (
           userTeam &&
           (userTeam.permissions.includes("create_task") ||
-            userTeam.permissions.includes("edit_project") || // Project permission implies task permission
+            userTeam.permissions.includes("edit_project") ||
             userTeam.role === "admin")
         );
       }) ||
@@ -209,42 +223,53 @@ exports.createTask = async (req, res) => {
       });
     }
 
-    if (assignedTo) {
-      // members can ONLY assign to themselves
-      if (
-        !user.isAdmin &&
-        !user.isSuperAdmin &&
-        assignedTo !== user._id.toString()
-      ) {
-        return res.status(403).json({
-          success: false,
-          message: "You can only assign tasks to yourself.",
-        });
-      }
+    // Validate assigned users (if any)
+    let validatedAssignedTo = [];
+    if (assignedTo && Array.isArray(assignedTo) && assignedTo.length > 0) {
+      // Check each assigned user
+      for (const userId of assignedTo) {
+        // Members can ONLY assign to themselves
+        if (
+          !user.isAdmin &&
+          !user.isSuperAdmin &&
+          userId !== user._id.toString()
+        ) {
+          return res.status(403).json({
+            success: false,
+            message: "You can only assign tasks to yourself.",
+          });
+        }
 
-      const assignedUser = await User.findById(assignedTo);
-      if (!assignedUser) {
-        return res.status(400).json({
-          success: false,
-          message: "Assigned user not found.",
-        });
-      }
+        const assignedUser = await User.findById(userId);
+        if (!assignedUser) {
+          return res.status(400).json({
+            success: false,
+            message: `User with ID ${userId} not found.`,
+          });
+        }
 
-      const isInProjectTeams = isUserInProjectTeams(
-        assignedUser._id,
-        existingProject,
-        assignedUser
-      );
-
-      if (!isInProjectTeams) {
-        return res.status(400).json({
-          success: false,
-          message: "Assigned user is not part of project teams.",
+        // Check if assigned user is in one of the selected teams
+        const isInSelectedTeams = teams.some(teamId => {
+          return assignedUser.teams?.some(
+            ut => ut.teamId.toString() === teamId
+          ) || existingProject.teamMembers.some(
+            tm => tm.userId._id.toString() === userId && 
+                  tm.teamId.toString() === teamId
+          );
         });
+
+        if (!isInSelectedTeams) {
+          return res.status(400).json({
+            success: false,
+            message: `User ${assignedUser.username} is not part of the selected teams.`,
+          });
+        }
+
+        validatedAssignedTo.push(userId);
       }
     }
 
-    // normalize tags
+    // Normalize tags
     let normalizedTags = [];
     if (Array.isArray(tags)) {
       normalizedTags = tags.map((t) => t.trim()).filter(Boolean);
@@ -255,11 +280,13 @@ exports.createTask = async (req, res) => {
         .filter(Boolean);
     }
 
+    // Create the task
     const newTask = new Task({
       title,
       description,
       status: status || "backlog",
-      assignedTo: assignedTo || null,
+      assignedTo: validatedAssignedTo.length > 0 ? validatedAssignedTo : [],
+      teams, // Array of team IDs
       project,
       deadline,
       tags: normalizedTags,
@@ -272,6 +299,7 @@ exports.createTask = async (req, res) => {
     // Populate the created task
     await newTask.populate([
       { path: "assignedTo", select: "username email" },
+      { path: "teams", select: "name" },
       { path: "project", select: "name" },
       { path: "createdBy", select: "username email" },
     ]);

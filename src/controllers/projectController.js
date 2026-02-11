@@ -119,41 +119,35 @@ exports.getAllProjects = async (req, res) => {
 
     let query = {};
 
-    // 🔐 Role-based scoping
-    if (!req.user.isSuperAdmin) {
-      if (req.user.isAdmin) {
-        query.adminId = req.user._id;
-      } else {
-        // members only see projects they are assigned to
-        query["teamMembers.userId"] = req.user._id;
-      }
+    // 🔐 ROLE BASED SCOPING
+    if (req.user.isSuperAdmin) {
+      // no restriction
+    } 
+    else if (req.user.isAdmin) {
+      query.adminId = req.user._id;
+    } 
+    else {
+      // 👤 MEMBER → only projects of teams they belong to
+      const userTeamIds = req.user.teams.map(t => t.teamId);
+      query["teams.teamId"] = { $in: userTeamIds };
     }
 
-    // 🔍 Team filter
+    // 🔍 OPTIONAL TEAM FILTER
     if (teamId) {
-      if (!req.user.isSuperAdmin && req.user.isAdmin) {
-        const userTeamIds = req.user.teams.map((t) =>
-          t.teamId.toString()
-        );
-        if (!userTeamIds.includes(teamId.toString())) {
-          return res.status(403).json({
-            success: false,
-            message: "You don't have access to this team's projects",
-          });
-        }
-      }
-      query["teams.teamId"] = teamId;
-    } else if (!req.user.isSuperAdmin && !req.user.isAdmin) {
-      const userTeamIds = req.user.teams.map((t) => t.teamId);
-      if (userTeamIds.length > 0) {
-        query["teams.teamId"] = { $in: userTeamIds };
-      }
-    }
+      const userTeamIds = req.user.teams.map(t => t.teamId.toString());
 
-    console.log("getAllProjects query:", JSON.stringify(query, null, 2));
+      if (!req.user.isSuperAdmin && !userTeamIds.includes(teamId)) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have access to this team",
+        });
+      }
+
+      query["teams.teamId"] = teamId;
+    }
 
     const projects = await Project.find(query)
-      .populate("teams.teamId", "name") // ✅ populate team name
+      .populate("teams.teamId", "name")
       .populate("adminId", "username email")
       .skip(skip)
       .limit(limit)
@@ -161,49 +155,18 @@ exports.getAllProjects = async (req, res) => {
 
     const totalProjects = await Project.countDocuments(query);
 
-    // 🧹 Clean response
-    const cleanProjects = projects.map((proj) => ({
-      _id: proj._id,
-      name: proj.name,
-      description: proj.description,
-      status: proj.status,
-      priority: proj.priority,
-      deadline: proj.deadline,
-      createdAt: proj.createdAt,
-
-      admin: proj.adminId
-        ? {
-            _id: proj.adminId._id,
-            username: proj.adminId.username,
-            email: proj.adminId.email,
-          }
-        : null,
-
-      // ✅ ONLY teams (id + name)
-      teams: (proj.teams || []).map((t) => ({
-        _id: t.teamId?._id,
-        name: t.teamId?.name,
-        addedAt: t.addedAt,
-      })),
-    }));
-
     res.status(200).json({
       success: true,
-      data: cleanProjects,
+      data: projects,
       pagination: {
         totalProjects,
         currentPage: page,
         totalPages: Math.ceil(totalProjects / limit),
-        hasNextPage: page * limit < totalProjects,
-        hasPrevPage: page > 1,
       },
     });
   } catch (err) {
-    console.error("Get all projects error:", err);
-    res.status(500).json({
-      success: false,
-      message: err.message,
-    });
+    console.error("Get projects error:", err);
+    res.status(500).json({ success: false, message: err.message });
   }
 };
 
